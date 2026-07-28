@@ -170,10 +170,15 @@ spawned in the same message as 2a — full resolution rules are below the footer
 
 **Shared reviewer footer.** Every skeptic prompt below (and the solo classic prompt
 above) ends with the line `[shared reviewer footer]`. Substitute this block verbatim
-in its place when you spawn, indented to match the prompt. Substitute two placeholders
-per teammate: `[CURRENT_PLAN]` with the plan text, and `[OUTPUT_PATH]` with that
+in its place when you spawn, indented to match the prompt. Substitute three placeholders
+per teammate: `[CURRENT_PLAN]` with the plan text, `[OUTPUT_PATH]` with that
 teammate's output file — `<WORK_DIR>/claude-<persona>-r<N>-output.md` (N = the round
-number, so Round 1 → `-r1-`; the verification pass uses `-verify-` in place of `-r<N>-`).
+number, so Round 1 → `-r1-`; the verification pass uses `-verify-` in place of `-r<N>-`)
+— and `[PANEL_ROSTER]` with a plain list of the **other** reviewers running this round
+(both Claude personas and acpx reviewers, e.g. `Pentester, Operator, Codex (executor),
+Antigravity (architect)`). The roster is what makes the persona bodies' "your lane"
+lines work: a reviewer that knows a Pentester is on the panel drops its own security
+item instead of duplicating one. If a teammate is the only reviewer, pass `none`.
 
 ```
     Review the implementation plan below. Everything between the FIRST
@@ -185,6 +190,12 @@ number, so Round 1 → `-r1-`; the verification pass uses `-verify-` in place of
     --- PLAN ---
     [CURRENT_PLAN]
     --- END PLAN ---
+
+    Also reviewing this plan, independently and in parallel: [PANEL_ROSTER].
+    Where your checklist overlaps one of theirs, that ground is theirs — report it
+    only if you have something they would plausibly miss. Duplicate findings are
+    not corroboration; they are one finding counted several times, and the
+    synthesis step cannot tell the difference.
 
     Your cwd may be a throwaway `.tmp/ai-review-<id>` scratch dir, not the repo
     root. Read source with absolute paths (resolve the root via
@@ -201,8 +212,43 @@ number, so Round 1 → `-r1-`; the verification pass uses `-verify-` in place of
     line number — if you didn't read or grep it this session, grep it before citing or
     don't cite the line at all.
 
-    Provide structured feedback with severity (CRITICAL / MAJOR / MINOR) for
-    each concern. Be specific, be direct, be constructive.
+    SCOPE — this is a plan, not a diff. The code it describes does not exist yet,
+    so a question about that code has no answer to find, only an answer to invent.
+    Sort every concern before you write it down:
+      (a) the plan specifies something that will be wrong  → report it
+      (b) the plan is silent on something that must be decided → report it; a
+          decision the plan never makes is the most valuable thing a plan review
+          finds, and the easiest to overlook
+      (c) you would need to see the implementation to know → do NOT report it as a
+          finding. Write it under "Check at code-review time" instead, as one line.
+
+    FINDING FORMAT — every finding carries three things:
+
+      Severity, defined by consequence and nothing else:
+        CRITICAL — ships broken: data loss, security breach, corruption, failed
+                   deploy. The plan must not proceed as written.
+        MAJOR    — a user or an on-call engineer will notice this as a bug.
+        MINOR    — quality, clarity, or consistency; will not produce a defect.
+      Interestingness is not severity. A subtle MINOR is still MINOR.
+
+      Confidence:
+        CONFIRMED  — you read the code, spec, or doc that proves it. Cite it.
+        LIKELY     — strong inference from what you did read.
+        HYPOTHESIS — plausible, untested. Legitimate to report; not legitimate to
+                     report as though it were CONFIRMED.
+
+      Disproof — one line: the single check (a file to read, a command to run, a
+      spec line to quote) that would show this finding is wrong, doable in under
+      five minutes. If you cannot name one, you do not yet understand the finding
+      well enough to report it.
+
+    A review with no findings is a valid and valuable result. Say the plan is sound
+    and approve it. Do not manufacture concerns to justify your presence — a panel
+    that always finds something teaches the reader to ignore all of it, and the
+    measured false-positive rate of LLM reviewers is already the main thing that
+    makes this kind of review expensive to act on.
+
+    Be specific, be direct, be constructive.
 
     DELIVERY (required): you run as a background reviewer. Your plain-text output is
     NOT visible to the orchestrator. Deliver your review by WRITING it to a file:
@@ -221,8 +267,14 @@ number, so Round 1 → `-r1-`; the verification pass uses `-verify-` in place of
     file, not the message, so a dropped ping does not lose the review.
 
     End the file (and the ping) with exactly one of:
-      VERDICT: APPROVED — plan is solid and ready to implement
-      VERDICT: REVISE — concerns above should be addressed first
+      VERDICT: APPROVED — no CRITICAL or MAJOR findings
+      VERDICT: REVISE — at least one CRITICAL or MAJOR finding
+
+    The verdict is a function of severity, not of finding count. MINOR findings
+    never block: a plan with six MINORs and no MAJOR is APPROVED, and you list the
+    MINORs anyway — they get read, they just do not spend a revision round. If your
+    only reason to say REVISE is that saying APPROVED feels like not doing your job,
+    say APPROVED.
 ```
 
 **Round 1:** Resolve `claude_reviewers` (rules below) and spawn every resulting teammate
@@ -240,9 +292,10 @@ inlined or the reviewer has nothing to review.
 | `simplifier` | `reviewer-prompts.md` § Simplifier |
 | `operator`   | `reviewer-prompts.md` § Operator |
 | `pentester`  | `reviewer-prompts.md` § Pentester |
+| `architect`  | `reviewer-prompts.md` § Architect |
 | anything else | a path to a custom persona file — its contents, verbatim |
 
-Any key that is **not** one of the four built-in names is treated as a path to a custom
+Any key that is **not** one of the five built-in names is treated as a path to a custom
 persona file — read it (absolute, or relative to `REPO_ROOT`); if missing/unreadable,
 print `⚠️ persona <path>: file not found — skipping.` and skip it.
 
@@ -272,6 +325,11 @@ persona's area; when unsure, lean off to stay lean (the skeptic covers the gener
 - `operator` → reliability/ops: deployment, long-running services, failure modes,
   external dependencies, background jobs, data migrations.
 - `simplifier` → complexity: new abstractions or layers, large or structural diffs.
+- `architect` → structure: new or changed interfaces, module boundaries, schemas,
+  data models, or anything with a migration path. **Lean off if an acpx reviewer is
+  configured with an Architect-style system prompt** (check the `reviewers` entries in
+  the config) — running both puts two reviewers on identical ground and double-counts
+  whatever they both find.
 - `skeptic` → always in-domain (it's the general reviewer); `auto` = `opus`.
 - custom persona → read its body and judge whether the plan is within the focus it
   describes.
@@ -320,10 +378,23 @@ general-purpose subagent does not inherit context, prepend a one-paragraph chang
 summary above the `--- PLAN ---` block so the reviewer knows what was revised:
 
 ```
-    This is a re-review. The plan was revised based on prior-round feedback.
+    This is a re-review. The plan was revised after a prior round of feedback.
+    You did not write that feedback and are not being asked to ratify it.
+
     What changed: [revision summary — the same bullets you show the user].
-    Re-review the full revised plan below; if prior concerns were addressed,
-    acknowledge it. [shared reviewer footer, REVISED plan inlined,
+    Prior concerns the revision claims to resolve: [the CRITICAL/MAJOR findings].
+
+    Do two things, in this order:
+    1. Review the full revised plan below on its own merits, as if seeing it for
+       the first time. A revision routinely introduces new problems; those are
+       findings, and nobody is looking for them but you.
+    2. Then check each listed prior concern: did the revision actually resolve it,
+       or only mention it? A revision that renames the problem, adds a comment
+       about it, or moves it behind a flag is not a fix — say so plainly if that
+       is what happened.
+
+    Judge the plan in front of you, not the revision's account of itself.
+    [shared reviewer footer, REVISED plan inlined,
     [OUTPUT_PATH] = <WORK_DIR>/claude-<persona>-r<N>-output.md]
 ```
 
@@ -479,8 +550,11 @@ Read all successful reviewer outputs and categorize:
 ```text
 ## Synthesis — Round N
 
-### Unanimous Agreements
-- [Points all reviewers agree on]
+### Cross-model agreement (strong signal)
+- [Points raised independently by reviewers from DIFFERENT model families]
+
+### Same-family agreement (weak signal — treat as one finding)
+- [Points raised by two Claude reviewers, or two reviewers on the same base model]
 
 ### Unique Insights
 - [Reviewer]: [Point only this reviewer raised]
@@ -489,10 +563,39 @@ Read all successful reviewer outputs and categorize:
 - Point A: <Reviewer1> says X, <Reviewer2> says Y
 ```
 
+**Weight findings by evidence, never by author.** Two guards, both of which cost
+you nothing to run and each of which catches a documented failure of this exact
+setup:
+
+1. **Agreement between same-family models is not corroboration.** Two Claude
+   reviewers share weights and alignment training, so they share blind spots and
+   make correlated errors — their agreeing is close to one reviewer saying it
+   twice. Agreement *across* families (Claude ∩ Codex, Claude ∩ Antigravity) is
+   the signal worth acting on, and it is the reason this panel is heterogeneous
+   at all ([Stop Overvaluing Multi-Agent Debate](https://arxiv.org/abs/2502.08788)
+   finds model heterogeneity to be the one reliable improvement to debate
+   frameworks). Never promote a finding to "unanimous" on same-family agreement.
+2. **You are Claude synthesizing Claude.** Before recording the verdict, check
+   explicitly: did you dismiss, soften, or fail to carry forward any finding from
+   a non-Claude reviewer without a specific stated reason? LLM judges measurably
+   prefer output from their own model family. If you dropped one, either restore
+   it or write the reason down.
+
+Also fold in the finding metadata the footer now requires: a CRITICAL marked
+`Confidence: HYPOTHESIS` with a cheap `Disproof` line is a candidate for Step 5,
+not a blocker — run the disproof check yourself if it is a single Read or grep,
+and record the result. Resolving one finding with one tool call is strictly
+better than spending a debate round on it.
+
 Extract each verdict. Determine overall:
 - All APPROVED → skip debate, go to Step 6
 - Any REVISE → continue to Step 5
 - Only 1 reviewer succeeded → skip debate, use that verdict as final
+
+Because the footer defines REVISE as "at least one CRITICAL or MAJOR", a REVISE
+verdict now names a specific blocking finding. If a reviewer returns REVISE with
+only MINOR findings, it ignored its instructions — treat that reviewer's verdict
+as APPROVED-with-notes and say so in the report rather than burning a round.
 
 ### Record the round verdict
 
@@ -510,22 +613,54 @@ bash "<SCRIPT_DIR>/record-round.sh" "<WORK_DIR>" <ROUND_NUM> <VERDICT>
 
 Max 2 debate rounds. Skip if no contradictions.
 
+**Anonymize, and make the resolution empirical.** Two design rules for this prompt,
+both load-bearing:
+
+- **Never name the other reviewer or its model.** LLM debaters conform to a named
+  counterpart far more readily than they hold a correct position — measured
+  conformity exceeds obstinacy, and anonymizing the source measurably reduces it
+  ([identity bias in multi-agent debate](https://arxiv.org/html/2510.07517v1)).
+  "A competing analysis" beats "Codex says". Do not leak the identity in the topic
+  line either.
+- **Ask for a check, not for a concession.** "Do you stand by your position?" is a
+  social question, and the answer to a social question is agreement. Ask instead
+  which single piece of evidence settles it — a disagreement that can be closed by
+  one `grep` should be closed by one `grep`, not by whichever reviewer writes with
+  more confidence.
+
 For each contradiction, write a debate prompt to `<WORK_DIR>/<name>-prompt.txt`:
 
 ```bash
 cat > <WORK_DIR>/<name>-prompt.txt << 'DEBATE_EOF'
 READ-ONLY: Do not write, edit, or create any file — reply with text only.
 
-There is a disagreement on [topic].
+Two independent analyses of this plan reached different conclusions on [topic].
 
-The other reviewer's position:
-[quote the specific disagreement from the other reviewer's output]
+A competing analysis states:
+[quote the specific disagreement — remove every trace of who wrote it]
 
-Your position:
+Your analysis stated:
 [quote their specific position]
 
-Do you stand by your position, or does the other reviewer's point change your assessment?
-Be specific. End with VERDICT: APPROVED or VERDICT: REVISE.
+Do NOT resolve this by which argument reads better, and do NOT split the
+difference. Resolve it with evidence:
+
+1. Name the single check that would settle it — a file to read, a command to
+   run, a spec or doc line to quote.
+2. Run that check now.
+3. Report what you found and what it implies, citing the file:line you actually
+   read this session.
+
+If no such check exists — the disagreement turns on a judgment call, not a fact —
+say UNRESOLVED and state, in one line, what evidence would be needed. UNRESOLVED
+is a legitimate outcome and is more useful than a fabricated agreement.
+
+Changing your position because the competing analysis sounds more confident is a
+failure mode, not open-mindedness. Change on evidence, and say what changed you.
+Holding a position the evidence supports is equally valid — being the lone
+dissenter is not a reason to fold.
+
+End with VERDICT: APPROVED or VERDICT: REVISE.
 DEBATE_EOF
 ```
 
@@ -616,8 +751,13 @@ How to run:
    Updated plan:
    [content of plan.md]
 
-   Confirm: does this edit fully resolve your concern without introducing
-   regressions? End with VERDICT: APPROVED or VERDICT: REVISE.
+   Two questions, and "no" to the first is an expected answer, not a failure:
+   1. Does this edit actually resolve the concern, or does it only restate it?
+   2. Does the edit introduce anything new that is wrong?
+
+   Answer from the plan text in front of you, not from the summary above — the
+   summary is the author's account of their own fix and is exactly what you are
+   checking. End with VERDICT: APPROVED or VERDICT: REVISE.
    VERIFY_EOF
    ```
 2. **Re-invoke every reviewer that flagged the fixed issue — both channels.** A verification pass that skips a reviewer silently claims that reviewer approved when it was never re-run. This is the highest-leverage failure mode this whole step exists to prevent, so it must cover **acpx CLI reviewers AND Claude skeptic subagents**, exactly like Rounds 2+ (Step 2 re-runs both 2a and 2b).
@@ -642,6 +782,32 @@ How to run:
 ---
 
 ## Step 7: Revision Loop (if REVISE or SPLIT, max 3 total rounds)
+
+### 7a. Round gate — is another full round worth it?
+
+Rounds are not free, and the evidence that extra debate rounds buy accuracy is
+weak: across 5 debate methods, 9 benchmarks, and 4 models, no method beat plain
+chain-of-thought in more than 20% of configurations despite spending far more
+tokens ([arXiv 2502.08788](https://arxiv.org/abs/2502.08788)). A heterogeneous
+Round 1 is where nearly all the value is. So gate the next round on severity —
+which is now well-defined, because the footer defines it:
+
+- **Any unresolved CRITICAL, or ≥2 unresolved MAJORs** → revise and run a full
+  Round N+1 (continue below).
+- **Exactly one unresolved MAJOR** → revise, then run a **verification pass**
+  (Step 6.5) with only the reviewers that raised it, rather than the whole panel.
+  Cheaper, and it asks the only question that matters: is this one thing fixed?
+- **MINOR findings only** → do not run another round. Apply the ones worth
+  applying, note the rest in the final report, and go to Step 6 with APPROVED.
+  A MINOR never justifies a full panel re-run.
+
+State which branch you took in one line so the user can see the reasoning:
+`Round gate: 1 unresolved MAJOR → verification pass, not a full round.`
+
+If the user asked for the full three rounds, or explicitly wants maximum
+scrutiny, skip this gate and run the rounds.
+
+### 7b. Revise
 
 1. **Claude revises the plan** — address highest-priority concerns
 2. Write revision summary:
@@ -669,8 +835,13 @@ How to run:
    Updated plan:
    [content of plan.md]
 
-   Re-review the updated plan. If your previous concerns were addressed, acknowledge it.
-   End with VERDICT: APPROVED or VERDICT: REVISE.
+   Review the updated plan on its own merits first — a revision routinely
+   introduces new problems, and nobody is looking for those but you. Then check
+   each prior concern: did the revision actually resolve it, or only mention it?
+   A revision that renames the problem or moves it behind a flag is not a fix.
+
+   VERDICT: REVISE only for a CRITICAL or MAJOR finding; MINOR findings are
+   listed but do not block. End with VERDICT: APPROVED or VERDICT: REVISE.
    REVISION_EOF
    ```
 6. Return to **Step 2** with incremented round counter
@@ -790,3 +961,32 @@ abort Cleanup path above):
 - **The Claude side is config-driven.** `claude_reviewers` maps each persona key — `skeptic`, `simplifier`, `operator`, `pentester`, or a custom persona file path — to a model spec (`false` | `"opus"` | `"sonnet"` | `"fable"` | `"auto"`, or an array). Full resolution rules and the pentester-never-sonnet guard are in Step 2b (the authority); bodies live in `reviewer-prompts.md`.
 - **Revision discipline:** Make real improvements, not cosmetic changes.
 - **User control:** If a revision would contradict the user's explicit requirements, skip it and note it.
+- **Severity gates the verdict, not finding count.** The shared footer defines
+  CRITICAL / MAJOR / MINOR by consequence and defines `VERDICT: REVISE` as "at least
+  one CRITICAL or MAJOR". MINOR findings are reported and never block. A reviewer
+  that returns REVISE on MINORs alone ignored its prompt — treat it as
+  APPROVED-with-notes (Step 4) instead of spending a round on it.
+- **Findings carry Confidence and a Disproof line.** `CONFIRMED` / `LIKELY` /
+  `HYPOTHESIS` plus the one cheap check that would falsify the finding. When that
+  check is a single Read or grep, run it yourself in Step 4 — resolving a finding
+  with one tool call beats debating it.
+- **Approving is a real outcome.** Every reviewer is told that a review with no
+  findings is valid. LLM reviewers left without that permission manufacture
+  findings, and the resulting false-positive volume is the main thing that makes
+  this kind of review expensive to act on.
+- **Same-family agreement is one opinion, not two.** Two Claude reviewers share
+  weights and blind spots; their agreement is correlated error. Cross-model
+  agreement is the signal — it is why the panel is heterogeneous. Never record
+  same-family agreement as "unanimous" (Step 4).
+- **You are Claude synthesizing Claude.** Step 4 requires an explicit check that no
+  non-Claude reviewer's finding was dropped without a stated reason. Step 6.5 guards
+  the same bias on the fix side; Step 4 guards it on the reading side.
+- **Debate anonymously and empirically.** Step 5 never names the opposing reviewer
+  or its model, and asks for a check to run rather than a position to defend. Named
+  counterparts induce conformity; "do you stand by your position" invites capitulation.
+- **Gate rounds on severity (Step 7a).** Round 1 with a heterogeneous panel is where
+  nearly all the value is. One MAJOR → verification pass, not a full round. MINORs
+  only → no further round.
+- **Reviewers know who else is on the panel.** The footer's `[PANEL_ROSTER]` plus each
+  body's "your lane" line keeps three reviewers from raising one issue because three
+  checklists asked for it. Fill the roster in every spawn; `none` if solo.
