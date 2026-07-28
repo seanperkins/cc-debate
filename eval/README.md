@@ -119,6 +119,39 @@ reintroduces exactly the self-preference bias the changes exist to guard against
 Score mechanically where possible, adjudicate the rest yourself, and use Codex as
 a judge only if you must.
 
+## Running both arms
+
+    bash eval/setup-arms.sh                       # -> /tmp/cc-debate-arms/{old,new}
+    python3 eval/seed-defects.py --plan <p.md> --out-dir variants/
+    bash eval/run-arm.sh --arm /tmp/cc-debate-arms/old --plan variants/control-plan.md --out r/old-control
+    bash eval/run-arm.sh --arm /tmp/cc-debate-arms/new --plan variants/control-plan.md --out r/new-control
+    # ...and the same two for seeded-plan.md, times 3 reps
+
+`setup-arms.sh` snapshots both refs with `git archive`, so both prompt versions
+exist simultaneously and nothing has to be checked out or re-installed mid
+experiment. `run-arm.sh` reads each arm's own `invoke-acpx.sh`, `reviewer-prompts.md`
+and `run.md` footer, so the installed plugin is irrelevant to the result.
+
+### Operational notes, learned the hard way
+
+- **Nested Claude guard.** Running this from inside Claude Code exports
+  `CLAUDECODE=1`, and the child `claude --print` then refuses to start: it prints
+  the bare string `Execution error` to stdout, exits, and writes nothing to
+  stderr. It looks exactly like a model failure. `run-arm.sh` unsets the guard
+  vars in the subshell and additionally treats that string as a hard failure so a
+  dead run cannot enter the data set as an empty review.
+- **Reviews are slow.** An opus persona with Read/Grep on a ~40KB prompt routinely
+  runs past ten minutes. `--persona-timeout` (default 900s) bounds it and records
+  a timeout as a data point. Budget hours, not minutes, for a full 12-run matrix;
+  use `sonnet` when validating the plumbing rather than measuring quality.
+- **A good control plan is harder to write than it looks.** A deliberately
+  trivial one-line plan is *not* a clean control: a one-sentence "add a --version
+  flag" genuinely omits a required decision (where the version string comes
+  from), and both arms correctly returned REVISE on it. That is the reviewers
+  being right, not miscalibrated. The control must be complete enough that REVISE
+  really would be wrong -- which is why the recommendation is a plan describing
+  something you already shipped.
+
 ## Pre-registered decision rule
 
 Write the rule down before looking at results, or you will rationalise whatever
