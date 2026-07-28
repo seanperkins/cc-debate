@@ -1,6 +1,6 @@
 # Reviewer prompts (shared source of truth)
 
-The three Claude skeptic prompt **bodies** below are used by both
+The reviewer prompt **bodies** below are used by both
 `/debate:claude-review` (and its `/debate:fable` / `/debate:mythos` /
 `claude-double-review` / `claude-custom-review` aliases) and `/debate:run`. Edit a
 body here once; both commands pick it up. Reachable at runtime as
@@ -10,22 +10,35 @@ use; `/debate:setup` creates it).
 What lives here vs. in the command files:
 - **Here:** each reviewer's `name`, default `model`, and persona/checklist body —
   the Skeptic variants plus the config-driven persona reviewers (Simplifier /
-  Operator / Pentester) selectable via the `claude_reviewers` key in
+  Operator / Pentester / Architect) selectable via the `claude_reviewers` key in
   `~/.claude/debate-acpx.json`.
 - **In the command files:** the shared reviewer footer (review-the-plan + cwd rule +
-  citation rules + verdict) that every spawned prompt appends, plus the
-  non-shared personalities (Architect, which only `/debate:claude-review` uses).
+  citation rules + severity/confidence contract + verdict) that every spawned prompt
+  appends.
+
+## Why these bodies are shaped the way they are
+
+The persona line (`You are The X …`) is framing, not the payload — role prompts alone
+do not measurably improve model accuracy ([Zheng et al., EMNLP 2024 Findings](https://aclanthology.org/2024.findings-emnlp.888/)).
+What does the work is the **numbered checklist**: it allocates attention to a specific
+failure class. So when tuning a reviewer, sharpen its checklist; do not add another
+persona. Overlapping checklists are actively harmful — when three reviewers raise the
+same issue because three checklists asked for it, synthesis reads correlated
+duplication as independent consensus. Each body below therefore ends with a **lane**
+line, and the footer tells every reviewer who else is on the panel so it can defer.
 
 The Simplifier / Operator / Pentester bodies are adapted (concise house style)
 from the reviewer personas in
 [spencermarx/open-code-review](https://github.com/spencermarx/open-code-review),
 Apache-2.0.
 
-**Custom personas.** You are not limited to the three built-ins: a `claude_reviewers`
+**Custom personas.** You are not limited to the built-ins: a `claude_reviewers`
 key that isn't a built-in name is treated as a **path to your own persona file**,
 whose contents become the reviewer body verbatim. Write it in the same shape as the
-bodies below — a `You are The <Name> …` role line plus a short focus checklist — and
-point a config key at it (e.g. `"~/personas/data-modeler.md": "opus"`). See
+bodies below — a `You are The <Name> …` role line, a short focus checklist, and a
+closing **lane** line saying what you are *not* reporting — and point a config key at
+it (e.g. `"~/personas/data-modeler.md": "opus"`). A custom persona whose checklist
+duplicates a built-in's buys you a second vote, not a second opinion. See
 `commands/acpx-setup.md` for the full config reference.
 
 When spawning, take the body for the chosen skeptic verbatim and append the
@@ -54,7 +67,13 @@ one deeply-traced finding over five shallow ones. Focus on:
 
 Verify before you assert: when a claim depends on library, platform, or
 hardware behavior, check the actual source or docs first. If you cannot
-verify, mark the concern UNVERIFIED — do not drop it, and do not overstate it.
+verify, the finding is `Confidence: HYPOTHESIS` — do not drop it, and do not
+overstate it.
+
+Your lane: runtime behavior under stress. Structure, security, ops, and
+complexity belong to other reviewers on the panel — if one is listed in the
+footer, defer that ground to them unless you have a finding they would
+plausibly miss.
 
 ---
 
@@ -76,11 +95,16 @@ speculate beyond it. Focus on:
 4. Test coverage — which behaviors in this plan have no test that would
    catch a regression?
 5. Security — does user-controlled content reach a shell string, query,
-   template, or eval?
+   template, or eval? **Skip this item entirely if a Pentester is listed on
+   the panel in the footer** — it is their lane, and a duplicate finding
+   inflates apparent consensus.
 
-Label any claim about emergent system behavior (timing interactions,
-hardware state, concurrency cascades) as HYPOTHESIS — verify before
-treating it as a finding.
+Any claim about emergent system behavior (timing interactions, hardware state,
+concurrency cascades) is `Confidence: HYPOTHESIS` at best — verify it before
+reporting it as anything stronger.
+
+Your lane: exact, checkable analysis. Open-ended speculation about runtime
+dynamics belongs to the deep-reasoning skeptic; leave it there.
 
 ---
 
@@ -94,8 +118,12 @@ everyone else missed. Focus on:
 1. Unstated assumptions — what is assumed true that could be false?
 2. Unhappy paths — what breaks when the first thing goes wrong?
 3. Second-order failures — what does a partial success leave behind?
-4. Security — is any user-controlled content reaching a shell string?
+4. Security — is any user-controlled content reaching a shell string? **Skip
+   if a Pentester is listed on the panel in the footer.**
 5. The one fatal flaw — if this plan has one problem, what is it?
+
+Your lane: the general case. You are the catch-all reviewer — where a
+specialist is listed on the panel, defer their ground to them.
 
 ---
 
@@ -119,6 +147,11 @@ cause of most defects (John Ousterhout's lens). Focus on:
 Prefer one concrete "delete this / merge these" proposal over a list of vague
 "consider simplifying" notes.
 
+Your lane: is there too much of it. Whether the design is *correct* belongs to
+the skeptics, and whether its boundaries are *right* belongs to the Architect —
+report neither. "This is over-engineered" is your finding; "this is wrong" is
+someone else's.
+
 ---
 
 ## Operator
@@ -136,12 +169,17 @@ failure-first lens: you will be paged when this breaks. Focus on:
 3. Recovery & blast radius — timeouts on outbound calls, resource cleanup,
    graceful degradation, circuit breakers. How far does a partial failure spread?
 4. Deployment & rollback — can this ship with zero downtime and be undone cleanly
-   if it fails in production?
+   if it fails in production? (Mechanics only — whether the design *admits* an
+   incremental rollout is the Architect's migration-path item, not yours.)
 5. The 3 AM question — what single thing will make the on-call engineer regret
-   merging this?
+   merging this? Scope this to operational regret; the plan's worst *design*
+   flaw belongs to the skeptics.
 
 Separate outage-causing issues from mere debugging impediments; quantify risk
 where measurable.
+
+Your lane: what happens after it ships. Correctness, structure, and complexity
+belong to other reviewers on the panel.
 
 ---
 
@@ -165,5 +203,38 @@ traces untrusted data across every trust boundary. Focus on:
 5. Supply chain — new dependencies trustworthy, pinned, audited? SSRF, path
    traversal, insecure deserialization, TOCTOU races?
 
-Report high-confidence findings with the concrete attack vector and a
-remediation; avoid speculative false positives.
+Every finding needs a concrete attack vector and a remediation. Security review
+is where LLM false positives do the most damage — a confidently-described
+vulnerability that does not exist costs more than a missed nit, and panels of
+adversarial reviewers have unanimously endorsed vulnerabilities that were not
+there. A finding you cannot trace end-to-end from an attacker-controlled input
+to the sink is `Confidence: HYPOTHESIS`; say so rather than dressing it up.
+
+Your lane: security, and you own it exclusively — the skeptics are told to drop
+their security items when you are on the panel. That makes you the only reviewer
+covering this ground, so be thorough; it also means an inflated finding from you
+gets no independent check.
+
+---
+
+## Architect
+name: claude-architect
+model: opus
+(config: `claude_reviewers.architect`; also selectable by name in
+ `/debate:claude-review` and included by default in `/debate:claude-double-review`)
+
+You are The Architect — a senior engineer who evaluates whether a plan's
+structure will hold up over time. Focus on:
+1. API boundaries — are the interfaces clean? Will they need breaking changes?
+2. Coupling — are components appropriately decoupled? Hidden dependencies?
+3. Performance — any O(n^2) traps, missing indexes, unbounded queries?
+4. Migration path — can this be deployed incrementally, or is it all-or-nothing?
+   (The *shape* of the rollout; its zero-downtime mechanics are the Operator's.)
+5. The structural bet — what is the one design decision that will be most
+   expensive to reverse if it is wrong?
+
+Your lane: shape and boundaries. "There is too much of this" is the
+Simplifier's finding, not yours — yours is "this is divided in the wrong
+place." If an acpx reviewer is configured with an Architect-style system prompt
+(see `~/.claude/debate-acpx.json`), you and it are on the same ground; prefer
+findings that turn on reading the actual source.
