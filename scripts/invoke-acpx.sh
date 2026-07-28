@@ -153,6 +153,23 @@ else
   # Initial review — build prompt from system_prompt + plan
   SYSTEM_PROMPT="${CONFIG_SYSTEM_PROMPT:-You are a senior engineer reviewing an implementation plan. Be specific, direct, and focus on what could go wrong.}"
 
+  # Does this reviewer have repo source to read? Reviewers reached through acpx get
+  # --approve-reads (see the ACPX_CMD below) and can open repo files to ground the
+  # plan's citations. The antigravity reviewer deliberately CANNOT: it runs from a
+  # throwaway empty workspace with the whole plan inlined in the prompt (quirk 3
+  # containment, below), so there is no repo for it to read.
+  #
+  # This gate is load-bearing, not cosmetic. Sending the grounding directive to a
+  # reviewer with no repo makes it reach for a terminal command to go looking; agy
+  # in headless print mode cannot prompt for the "command" permission, auto-denies
+  # it, and returns NOTHING — the review dies with "no output produced" and exit 1,
+  # rather than degrading. Observed 2026-07-28 in graphiti-kb: antigravity went
+  # 0 -> 0 -> 1 the moment the ungated directive shipped.
+  HAS_REPO_ACCESS=1
+  if [ "$AGENT" = "antigravity" ]; then
+    HAS_REPO_ACCESS=0
+  fi
+
   {
     echo "$SYSTEM_PROMPT"
     echo ""
@@ -164,7 +181,11 @@ else
     echo ""
     echo "SCOPE — this is a plan, not a diff. The code it describes does not exist yet, so a question about that code has no answer to find, only an answer to invent. Sort every concern before reporting it: (a) the plan specifies something that will be wrong -- report it; (b) the plan is silent on something that must be decided -- report it, this is the most valuable thing a plan review finds; (c) you would need to see the implementation to know -- do NOT report it as a finding, list it in one line under 'Check at code-review time' instead."
     echo ""
-    echo "GROUNDING — before building a critique on any file, line, function, or symbol the plan cites, confirm it exists by reading or grepping it. A citation you cannot confirm is itself the finding: report that the plan cites something that does not exist, rather than reasoning on top of it. Your own citations are held to the same bar -- cite only file:line you actually read this session, and never approximate a line number."
+    if [ "$HAS_REPO_ACCESS" -eq 1 ]; then
+      echo "GROUNDING — before building a critique on any file, line, function, or symbol the plan cites, confirm it exists by reading or grepping it. A citation you cannot confirm is itself the finding: report that the plan cites something that does not exist, rather than reasoning on top of it. Your own citations are held to the same bar -- cite only file:line you actually read this session, and never approximate a line number."
+    else
+      echo "GROUNDING — you have NO access to the repository: you are running in an empty throwaway workspace, and the plan above is the entirety of what you have been given. Do not attempt to read, grep, list, or otherwise go looking for source files, and do not run terminal commands to find them; there is nothing there, and the attempt will end your review without producing one. Review the plan as a self-contained document. Where the plan's correctness depends on a file, symbol, or line you cannot see, say so explicitly and treat it as an assumption the plan is making -- an unverifiable citation is a legitimate finding to raise, and is the correct outcome here rather than a failure. Do not invent file:line citations of your own."
+    fi
     echo ""
     echo "FINDING FORMAT — give every finding a severity, a confidence, and a disproof."
     echo "  Severity is defined by consequence, not by how interesting the finding is:"
