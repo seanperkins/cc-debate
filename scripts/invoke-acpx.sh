@@ -105,6 +105,34 @@ CONFIG_TIMEOUT=$(jq -r --arg rev "$REVIEWER" '.reviewers[$rev].timeout // empty'
 CONFIG_SYSTEM_PROMPT=$(jq -r --arg rev "$REVIEWER" '.reviewers[$rev].system_prompt // empty' "$CONFIG_FILE")
 CONFIG_MODEL=$(jq -r --arg rev "$REVIEWER" '.reviewers[$rev].model // empty' "$CONFIG_FILE")
 
+# --- Repo access (resolved once; used by both the prompt builder and the agy call) ---
+# Whether this reviewer can actually open repo source to ground the plan's citations.
+# It must match reality in BOTH places: the prompt tells the reviewer to verify
+# citations only when it really can, and the agy invocation adds the repo only when
+# the prompt asked for it. A mismatch is not cosmetic — telling a reviewer with no
+# repo to go looking makes agy reach for a terminal command, which headless mode
+# soft-denies, and a denied permission returns NO output at all: the review dies with
+# exit 1 rather than degrading. (observed 2026-07-28: antigravity went 0 -> 0 -> 1
+# the moment an ungated grounding directive shipped.)
+#
+# acpx reviewers always have it — the runner passes --approve-reads. The antigravity
+# reviewer gets it by adding the repo read-only with --add-dir; opt out per reviewer
+# with "add_repo": false to restore the plan-only throwaway-workspace behaviour.
+CONFIG_ADD_REPO=$(jq -r --arg rev "$REVIEWER" '.reviewers[$rev].add_repo // true' "$CONFIG_FILE")
+REPO_TOP=""
+HAS_REPO_ACCESS=1
+if [ "$AGENT" = "antigravity" ]; then
+  HAS_REPO_ACCESS=0
+  if [ "$CONFIG_ADD_REPO" != "false" ]; then
+    if REPO_TOP=$(git -C "$WORK_DIR" rev-parse --show-toplevel 2>/dev/null) \
+       && [ -n "$REPO_TOP" ] && [ -d "$REPO_TOP" ]; then
+      HAS_REPO_ACCESS=1
+    else
+      REPO_TOP=""
+    fi
+  fi
+fi
+
 # --- Nested Claude guard ---
 # When the agent is `claude`, Claude Code's nested-session guard (CLAUDECODE=1)
 # blocks acpx from spawning it as an ACP subprocess. Unset the guard vars so the
@@ -153,23 +181,6 @@ else
   # Initial review — build prompt from system_prompt + plan
   SYSTEM_PROMPT="${CONFIG_SYSTEM_PROMPT:-You are a senior engineer reviewing an implementation plan. Be specific, direct, and focus on what could go wrong.}"
 
-  # Does this reviewer have repo source to read? Reviewers reached through acpx get
-  # --approve-reads (see the ACPX_CMD below) and can open repo files to ground the
-  # plan's citations. The antigravity reviewer deliberately CANNOT: it runs from a
-  # throwaway empty workspace with the whole plan inlined in the prompt (quirk 3
-  # containment, below), so there is no repo for it to read.
-  #
-  # This gate is load-bearing, not cosmetic. Sending the grounding directive to a
-  # reviewer with no repo makes it reach for a terminal command to go looking; agy
-  # in headless print mode cannot prompt for the "command" permission, auto-denies
-  # it, and returns NOTHING — the review dies with "no output produced" and exit 1,
-  # rather than degrading. Observed 2026-07-28 in graphiti-kb: antigravity went
-  # 0 -> 0 -> 1 the moment the ungated directive shipped.
-  HAS_REPO_ACCESS=1
-  if [ "$AGENT" = "antigravity" ]; then
-    HAS_REPO_ACCESS=0
-  fi
-
   {
     echo "$SYSTEM_PROMPT"
     echo ""
@@ -182,7 +193,11 @@ else
     echo "SCOPE — this is a plan, not a diff. The code it describes does not exist yet, so a question about that code has no answer to find, only an answer to invent. Sort every concern before reporting it: (a) the plan specifies something that will be wrong -- report it; (b) the plan is silent on something that must be decided -- report it, this is the most valuable thing a plan review finds; (c) you would need to see the implementation to know -- do NOT report it as a finding, list it in one line under 'Check at code-review time' instead."
     echo ""
     if [ "$HAS_REPO_ACCESS" -eq 1 ]; then
-      echo "GROUNDING — before building a critique on any file, line, function, or symbol the plan cites, confirm it exists by reading or grepping it. A citation you cannot confirm is itself the finding: report that the plan cites something that does not exist, rather than reasoning on top of it. Your own citations are held to the same bar -- cite only file:line you actually read this session, and never approximate a line number."
+      echo "GROUNDING — before building a critique on any file, line, function, or symbol the plan cites, confirm it exists by reading it. A citation you cannot confirm is itself the finding: report that the plan cites something that does not exist, rather than reasoning on top of it. Your own citations are held to the same bar -- cite only file:line you actually read this session, and never approximate a line number."
+      if [ "$AGENT" = "antigravity" ]; then
+        echo ""
+        echo "Use your file reading and file search tools to do this. Do NOT shell out to terminal commands (grep, find, ls, cat, git) to go looking: you are running non-interactively and cannot be prompted, so a command that needs approval is denied and your ENTIRE review is discarded -- not just that one command. File reads need no approval; terminal commands do. Writes are denied too, which is expected: you are a reviewer, and the review text is your only deliverable."
+      fi
     else
       echo "GROUNDING — you have NO access to the repository: you are running in an empty throwaway workspace, and the plan above is the entirety of what you have been given. Do not attempt to read, grep, list, or otherwise go looking for source files, and do not run terminal commands to find them; there is nothing there, and the attempt will end your review without producing one. Review the plan as a self-contained document. Where the plan's correctness depends on a file, symbol, or line you cannot see, say so explicitly and treat it as an assumption the plan is making -- an unverifiable citation is a legitimate finding to raise, and is the correct outcome here rather than a failure. Do not invent file:line citations of your own."
     fi
@@ -270,11 +285,31 @@ handle_invocation_result() {
 #   2. Non-TTY stdout bug — `agy -p` drops its final response (and can hang) when
 #      stdout is not a TTY, which is exactly our case (capturing to a file). We run
 #      it under a PTY via `script`, then strip the PTY's ANSI/CR/EOT noise.
-#   3. No hard read-only flag — unlike gemini's `--approval-mode plan`, agy has no
+#   3. No hard read-only FLAG — unlike gemini's `--approval-mode plan`, agy has no
 #      equivalent, and `--sandbox` only restricts terminal commands (it does NOT
-#      prevent file writes). We contain it by running from a throwaway workspace
-#      (the full plan is in the prompt arg, so agy needs no repo access) plus the
-#      explicit read-only directive already baked into the prompt.
+#      prevent file writes). `--mode plan` is NOT one either: measured 2026-07-28,
+#      it changes nothing about write behaviour here.
+#
+#      Read-only is enforced instead by headless mode itself. In `-p` runs agy
+#      cannot prompt for a permission, so it SOFT-DENIES any tool needing one and
+#      prints a stderr notice. `write_file` needs one; reads of an --add-dir'd
+#      directory do not. Verified directly: asked to create a file and overwrite
+#      an existing one inside its own workspace, agy wrote neither (both with and
+#      without `--mode plan`) — the target file was untouched.
+#
+#      That is why we do NOT pass --dangerously-skip-permissions. It would auto-
+#      approve write_file and is the one flag that turns this reviewer loose on
+#      the repo. The stderr notice suggests it; do not take the suggestion.
+#
+#      The same soft-deny is a hazard on the read side: a denied permission
+#      produces NO output at all and kills the whole review (exit 1), rather than
+#      degrading. So the prompt tells this reviewer to use file reads and avoid
+#      terminal commands, which need the "command" permission.
+#
+#      The repo is added read-only via --add-dir (see REPO_ROOT below) so the
+#      reviewer can actually ground the plan's citations instead of taking them on
+#      faith. Set "add_repo": false on the reviewer in debate-acpx.json to go back
+#      to the old plan-only behaviour (throwaway workspace, no repo visibility).
 # Works with OAuth (run `agy` once to sign in) or ANTIGRAVITY_API_KEY auth.
 
 if [ "$AGENT" = "antigravity" ]; then
@@ -323,9 +358,19 @@ if [ "$AGENT" = "antigravity" ]; then
     unset AGY_MODEL || true
   fi
 
-  # Throwaway workspace for read-only containment (quirk 3).
+  # Throwaway workspace stays the cwd (quirk 3): agy writes any scratch it wants
+  # here, not into the repo.
   AGY_WORKSPACE="$WORK_DIR/.agy-workspace"
   mkdir -p "$AGY_WORKSPACE"
+
+  # Repo access resolved once, up top. Reads inside an --add-dir'd tree need no
+  # permission; writes stay soft-denied by headless mode (quirk 3).
+  export AGY_ADD_DIR="$REPO_TOP"
+  if [ -n "$AGY_ADD_DIR" ]; then
+    echo "[$REVIEWER] Repo added read-only for citation grounding: $AGY_ADD_DIR" >&2
+  else
+    echo "[$REVIEWER] No repo access — reviewing the plan as a self-contained document." >&2
+  fi
 
   TIMEOUT_PREFIX=()
   if [ -n "$TIMEOUT_BIN" ] && [ "$TIMEOUT" -gt 0 ]; then
@@ -348,6 +393,11 @@ cmd = [os.environ["AGY_BIN"], "-p", os.environ["AGY_PROMPT"],
 model = os.environ.get("AGY_MODEL")
 if model:
     cmd += ["--model", model]
+# Repo added read-only so the reviewer can ground the plan citations; writes are
+# still soft-denied by headless mode. Never add --dangerously-skip-permissions here.
+add_dir = os.environ.get("AGY_ADD_DIR")
+if add_dir:
+    cmd += ["--add-dir", add_dir]
 # Put only agy stdout on a pty so isatty(stdout) is true; stderr stays on fd 2.
 master = None
 try:
