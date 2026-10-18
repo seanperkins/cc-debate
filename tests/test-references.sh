@@ -132,7 +132,8 @@ test_new_files_exist() {
     scripts/acpx-env-snapshot.sh \
     scripts/reviewer-prompts.md \
     commands/acpx-setup.md \
-    commands/quick.md \
+    commands/fork.md \
+    scripts/fork-cleanup.sh \
     tests/mock-agy.sh \
     tests/mock-claude.sh \
     debate-acpx.sample.json \
@@ -342,9 +343,9 @@ test_alias_allowed_tools_parity() {
   [ "$run_line" = "$all_line" ] || { echo "  allowed-tools mismatch between all.md and run.md"; return 1; }
 }
 
-test_fork_only_in_quick() {
+test_only_the_fork_command_may_fork() {
   # A fork inherits the parent model and ignores `model:`, so it collapses a panel onto one
-  # lab. Only /debate:quick, which is a single-lab sweep by design, may be allowed to spawn
+  # lab. Only /debate:fork, which is a single-lab sweep by design, may be allowed to spawn
   # one. The warnings in run.md and claude-review.md quote the phrase, so check the grant
   # (the allowed-tools line), not the text.
   # So the rule is positive: every Agent grant on another command's allowed-tools line must
@@ -354,16 +355,17 @@ test_fork_only_in_quick() {
   # command here uses.
   local f bad=0 line fixture
   for f in "$PROJECT_DIR"/commands/*.md; do
-    [ "$(basename "$f")" = "quick.md" ] && continue
+    [ "$(basename "$f")" = "fork.md" ] && continue
     line=$(grep -m1 '^allowed-tools:' "$f" || true)
     only_general_purpose_agents "$line" || { echo "  $(basename "$f"): grants an Agent that is not general-purpose"; bad=1; }
   done
-  grep -m1 '^allowed-tools:' "$PROJECT_DIR/commands/quick.md" | grep -q 'Agent(subagent_type: fork)' \
-    || { echo "  quick.md: does not grant fork"; bad=1; }
+  grep -m1 '^allowed-tools:' "$PROJECT_DIR/commands/fork.md" | grep -q 'Agent(subagent_type: fork)' \
+    || { echo "  fork.md: does not grant fork"; bad=1; }
 
   # The check itself: run the failing branch, so a loosened regex cannot pass unnoticed.
   for fixture in 'Agent' 'Agent(*)' 'Agent(subagent_type: *)' 'Agent(model: opus)' \
                  'Agent(subagent_type: fork)' 'Agent(subagent_type:"fork")' \
+                 'Agent(subagent_type: general-purpose-custom)' 'Agent(subagent_type: general-purpose*)' \
                  'Read(x), Agent(subagent_type: general-purpose), Agent'; do
     if only_general_purpose_agents "allowed-tools: $fixture"; then
       echo "  guard accepted a bad grant: $fixture"; bad=1
@@ -371,7 +373,21 @@ test_fork_only_in_quick() {
   done
   only_general_purpose_agents 'allowed-tools: Bash(gh repo fork:*), Agent(subagent_type: general-purpose, model: opus)' \
     || { echo "  guard rejected a scoped grant"; bad=1; }
+  only_general_purpose_agents 'allowed-tools: Agent(subagent_type: general-purpose)' \
+    || { echo "  guard rejected a bare scoped grant"; bad=1; }
   [ "$bad" -eq 0 ]
+}
+
+test_fork_command_grants_writes_with_edit_rules() {
+  # Claude Code checks file permissions against Edit(path) and Read(path) rules only; it
+  # accepts a Write(path) rule but never consults it, so the fork output files would not be
+  # pre-approved. The pattern must also match from a subdirectory, hence the leading **/.
+  local line
+  line=$(grep -m1 '^allowed-tools:' "$PROJECT_DIR/commands/fork.md" || true)
+  echo "$line" | grep -q 'Edit(\*\*/\.tmp/ai-review-\*/\*\*)' \
+    || { echo "  fork.md: no Edit rule for the work dir"; return 1; }
+  ! echo "$line" | grep -q 'Write(' \
+    || { echo "  fork.md: Write(path) rules are never consulted; use Edit"; return 1; }
 }
 
 # True when every Agent grant on an allowed-tools line is scoped to general-purpose.
@@ -380,7 +396,7 @@ only_general_purpose_agents() {
   while IFS= read -r g; do
     [ -n "$g" ] || continue
     case "$g" in
-      "Agent(subagent_type: general-purpose"*) ;;
+      "Agent(subagent_type: general-purpose)"|"Agent(subagent_type: general-purpose,"*) ;;
       *) return 1 ;;
     esac
   done < <(printf '%s\n' "$1" | grep -oE 'Agent(\([^)]*\))?' || true)
@@ -412,7 +428,8 @@ run_test "run.md is canonical orchestrator" test_run_is_canonical_orchestrator
 run_test "all.md is alias to run" test_all_is_alias_to_run
 run_test "run defaults to no Claude teammates" test_run_defaults_to_no_claude_teammates
 run_test "alias allowed-tools parity" test_alias_allowed_tools_parity
-run_test "fork granted only to quick" test_fork_only_in_quick
+run_test "only the fork command may fork" test_only_the_fork_command_may_fork
+run_test "fork command grants writes with Edit rules" test_fork_command_grants_writes_with_edit_rules
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ($(( PASS + FAIL )) total) ==="
