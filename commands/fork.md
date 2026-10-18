@@ -18,10 +18,23 @@ a diff you did not write: a fork is a full copy of this session, tools included,
 control is the prompt. Review that with a restricted panel instead (the sample config's
 `untrusted` preset, if your config defines it).
 
+**Run it from a fresh session.** A fork also inherits everything already said in this session,
+including the reasoning that produced the change, and a reviewer should judge the result, not the
+author's justification. If this session wrote or planned the change, start a new session (or
+`/clear`) and run `/debate:fork` there; Steps 1-3 rebuild everything the forks need from the repo.
+
 Arguments (all optional):
 - `--wide` — up to 8 lenses instead of 4.
 - Lens names (`security,tests`) — use exactly these, skip the picking in Step 4.
 - `--base <ref>` — diff against this ref instead of the default branch's merge base.
+
+## Step 0: Check what you are inheriting
+
+Before creating anything, look at this conversation. If it already contains the work that produced
+the change (the edits, a plan, or explanations of why), say so in one line, recommend a fresh
+session (or `/clear`) and a re-run, and stop unless the user says to go on. If they go on, say in
+the report that the forks were anchored on that reasoning. In a new session there is nothing to
+inherit but the repo.
 
 ## Step 1: Work dir
 

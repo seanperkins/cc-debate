@@ -23,7 +23,9 @@
   and respawned once into its own `-b-` file. Forks hold the session's tools, so cleanup goes
   through the new `scripts/fork-cleanup.sh`, which only removes a `.tmp/ai-review-<8 hex>`
   directory, instead of `safe-cleanup.sh --force`. The command's file grants use `Edit(...)`
-  rules, since Claude Code never consults `Write(path)` rules.
+  rules, since Claude Code never consults `Write(path)` rules. Because a fork inherits the whole
+  conversation, including the reasoning that produced the change, the command says to run it from a
+  fresh session and checks for an authoring conversation before it starts.
 
 ## [3.2.0] — 2026-08-10 (the parallel runner waits on its own children)
 

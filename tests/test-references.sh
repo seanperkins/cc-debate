@@ -390,6 +390,21 @@ test_fork_command_grants_writes_with_edit_rules() {
     || { echo "  fork.md: Write(path) rules are never consulted; use Edit"; return 1; }
 }
 
+test_fork_warns_about_inherited_context() {
+  # A fork inherits the whole conversation, including the reasoning that produced the change,
+  # so a review run in the authoring session is anchored on the author's justification. The
+  # command and the README must both say to start from a fresh session, and the command must
+  # check for it before it creates anything (Step 0 comes before Step 1).
+  local f="$PROJECT_DIR/commands/fork.md"
+  grep -q 'fresh session' "$f" || { echo "  fork.md: no fresh-session warning"; return 1; }
+  grep -q 'fresh session' "$PROJECT_DIR/README.md" || { echo "  README.md: no fresh-session warning"; return 1; }
+  local s0 s1
+  s0=$(grep -n '^## Step 0:' "$f" | head -1 | cut -d: -f1)
+  s1=$(grep -n '^## Step 1:' "$f" | head -1 | cut -d: -f1)
+  [ -n "$s0" ] && [ -n "$s1" ] && [ "$s0" -lt "$s1" ] \
+    || { echo "  fork.md: no Step 0 before Step 1 checking what the session inherits"; return 1; }
+}
+
 # True when every Agent grant on an allowed-tools line is scoped to general-purpose.
 only_general_purpose_agents() {
   local g
@@ -430,6 +445,7 @@ run_test "run defaults to no Claude teammates" test_run_defaults_to_no_claude_te
 run_test "alias allowed-tools parity" test_alias_allowed_tools_parity
 run_test "only the fork command may fork" test_only_the_fork_command_may_fork
 run_test "fork command grants writes with Edit rules" test_fork_command_grants_writes_with_edit_rules
+run_test "fork warns about inherited context" test_fork_warns_about_inherited_context
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ($(( PASS + FAIL )) total) ==="
