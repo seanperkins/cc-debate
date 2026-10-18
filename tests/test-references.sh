@@ -132,6 +132,7 @@ test_new_files_exist() {
     scripts/acpx-env-snapshot.sh \
     scripts/reviewer-prompts.md \
     commands/acpx-setup.md \
+    commands/quick.md \
     tests/mock-agy.sh \
     tests/mock-claude.sh \
     debate-acpx.sample.json \
@@ -341,6 +342,51 @@ test_alias_allowed_tools_parity() {
   [ "$run_line" = "$all_line" ] || { echo "  allowed-tools mismatch between all.md and run.md"; return 1; }
 }
 
+test_fork_only_in_quick() {
+  # A fork inherits the parent model and ignores `model:`, so it collapses a panel onto one
+  # lab. Only /debate:quick, which is a single-lab sweep by design, may be allowed to spawn
+  # one. The warnings in run.md and claude-review.md quote the phrase, so check the grant
+  # (the allowed-tools line), not the text.
+  # So the rule is positive: every Agent grant on another command's allowed-tools line must
+  # be scoped to `subagent_type: general-purpose`. That rejects a bare `Agent`, `Agent(*)`,
+  # `Agent(subagent_type: *)`, `Agent(model: opus)` and any spelling of fork, without tripping
+  # on `Bash(gh repo fork:*)`. Only the first allowed-tools line is read, the form every
+  # command here uses.
+  local f bad=0 line fixture
+  for f in "$PROJECT_DIR"/commands/*.md; do
+    [ "$(basename "$f")" = "quick.md" ] && continue
+    line=$(grep -m1 '^allowed-tools:' "$f" || true)
+    only_general_purpose_agents "$line" || { echo "  $(basename "$f"): grants an Agent that is not general-purpose"; bad=1; }
+  done
+  grep -m1 '^allowed-tools:' "$PROJECT_DIR/commands/quick.md" | grep -q 'Agent(subagent_type: fork)' \
+    || { echo "  quick.md: does not grant fork"; bad=1; }
+
+  # The check itself: run the failing branch, so a loosened regex cannot pass unnoticed.
+  for fixture in 'Agent' 'Agent(*)' 'Agent(subagent_type: *)' 'Agent(model: opus)' \
+                 'Agent(subagent_type: fork)' 'Agent(subagent_type:"fork")' \
+                 'Read(x), Agent(subagent_type: general-purpose), Agent'; do
+    if only_general_purpose_agents "allowed-tools: $fixture"; then
+      echo "  guard accepted a bad grant: $fixture"; bad=1
+    fi
+  done
+  only_general_purpose_agents 'allowed-tools: Bash(gh repo fork:*), Agent(subagent_type: general-purpose, model: opus)' \
+    || { echo "  guard rejected a scoped grant"; bad=1; }
+  [ "$bad" -eq 0 ]
+}
+
+# True when every Agent grant on an allowed-tools line is scoped to general-purpose.
+only_general_purpose_agents() {
+  local g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    case "$g" in
+      "Agent(subagent_type: general-purpose"*) ;;
+      *) return 1 ;;
+    esac
+  done < <(printf '%s\n' "$1" | grep -oE 'Agent(\([^)]*\))?' || true)
+  return 0
+}
+
 # --- Run ---
 
 echo ""
@@ -366,6 +412,7 @@ run_test "run.md is canonical orchestrator" test_run_is_canonical_orchestrator
 run_test "all.md is alias to run" test_all_is_alias_to_run
 run_test "run defaults to no Claude teammates" test_run_defaults_to_no_claude_teammates
 run_test "alias allowed-tools parity" test_alias_allowed_tools_parity
+run_test "fork granted only to quick" test_fork_only_in_quick
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ($(( PASS + FAIL )) total) ==="
